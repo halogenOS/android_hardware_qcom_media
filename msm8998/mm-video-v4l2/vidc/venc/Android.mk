@@ -53,11 +53,13 @@ ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_VQZIP)),true)
 libmm-venc-def += -D_VQZIP_
 endif
 
+ifneq ($(QCPATH),)
 ifeq ($(call is-board-platform-in-list, $(TARGETS_THAT_SUPPORT_PQ)),true)
 ifneq ($(wildcard vendor/qcom/$(TARGET_BOARD_PLATFORM)/prebuilts/grease/),)
 libmm-venc-def += -D_PQ_
 else
 $(warning "venc: PQ compiled out")
+endif
 endif
 endif
 
