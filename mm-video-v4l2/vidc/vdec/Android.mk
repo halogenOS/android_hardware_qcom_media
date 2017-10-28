@@ -66,6 +66,7 @@ libmm-vdec-inc          += $(TOP)/frameworks/native/include/media/openmax
 libmm-vdec-inc          += $(TOP)/frameworks/native/include/media/hardware
 libmm-vdec-inc      	+= $(call project-path-for,qcom-media)/libc2dcolorconvert
 libmm-vdec-inc      	+= $(TOP)/frameworks/av/include/media/stagefright
+libmm-vdec-inc         += $(TOP)/frameworks/native/libs/nativebase/include
 libmm-vdec-inc      	+= $(TARGET_OUT_HEADERS)/mm-video/SwVdec
 libmm-vdec-inc      	+= $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 
