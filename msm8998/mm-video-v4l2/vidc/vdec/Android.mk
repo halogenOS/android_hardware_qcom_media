@@ -75,6 +75,7 @@ libmm-vdec-inc          += $(TOP)/frameworks/native/libs/nativebase/include
 libmm-vdec-inc      	+= $(QCOM_MEDIA_ROOT)/libc2dcolorconvert
 libmm-vdec-inc      	+= $(TARGET_OUT_HEADERS)/mm-video/SwVdec
 libmm-vdec-inc      	+= $(TARGET_OUT_HEADERS)/mm-video/swvdec
+libmm-vdec-inc          += $(TOP)/hardware/qcom/msm8998/kernel-headers
 ifeq ($(TARGET_COMPILE_WITH_MSM_KERNEL),true)
 libmm-vdec-inc      	+= $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/usr/include
 endif
