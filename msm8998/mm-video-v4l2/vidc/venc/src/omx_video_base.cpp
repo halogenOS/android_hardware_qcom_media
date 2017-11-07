@@ -245,15 +245,6 @@ unsigned omx_video::omx_cmd_queue::get_q_msg_type()
 }
 
 
-
-#ifdef _ANDROID_
-VideoHeap::VideoHeap(int fd, size_t size, void* base)
-{
-    // dup file descriptor, map once, use pmem
-    init(dup(fd), base, size, 0 , MEM_DEVICE);
-}
-#endif // _ANDROID_
-
 /* ======================================================================
    FUNCTION
    omx_venc::omx_venc
@@ -328,6 +319,8 @@ omx_video::omx_video():
     property_get("ro.board.platform", platform_name, "0");
     strlcpy(m_platform, platform_name, sizeof(m_platform));
 #endif
+
+    pthread_mutex_init(&m_buf_lock, NULL);
 }
 
 
@@ -369,6 +362,8 @@ omx_video::~omx_video()
     sem_destroy(&m_cmd_lock);
     DEBUG_PRINT_HIGH("m_etb_count = %" PRIu64 ", m_fbd_count = %" PRIu64, m_etb_count,
             m_fbd_count);
+
+    pthread_mutex_destroy(&m_buf_lock);
     DEBUG_PRINT_HIGH("omx_video: Destructor exit");
     DEBUG_PRINT_HIGH("Exiting OMX Video Encoder ...");
 }
@@ -1828,7 +1823,6 @@ OMX_ERRORTYPE  omx_video::get_parameter(OMX_IN OMX_HANDLETYPE     hComp,
                 VALIDATE_OMX_PARAM_DATA(paramData, OMX_VIDEO_PARAM_INTRAREFRESHTYPE);
                 OMX_VIDEO_PARAM_INTRAREFRESHTYPE* intrarefresh = (OMX_VIDEO_PARAM_INTRAREFRESHTYPE*)paramData;
                 DEBUG_PRINT_LOW("OMX_IndexParamVideoIntraRefresh");
-                DEBUG_PRINT_ERROR("OMX_IndexParamVideoIntraRefresh GET");
                 intrarefresh->eRefreshMode = m_sIntraRefresh.eRefreshMode;
                 intrarefresh->nCirMBs = m_sIntraRefresh.nCirMBs;
                 break;
@@ -2119,7 +2113,7 @@ OMX_ERRORTYPE  omx_video::get_parameter(OMX_IN OMX_HANDLETYPE     hComp,
                 if (!dev_get_temporal_layer_caps(&m_sParamTemporalLayers.nLayerCountMax,
                         &m_sParamTemporalLayers.nBLayerCountMax)) {
                     DEBUG_PRINT_ERROR("Failed to get temporal layer capabilities");
-                    eRet = OMX_ErrorHardware;
+                    eRet = OMX_ErrorUnsupportedIndex;
                 }
                 memcpy(pLayerInfo, &m_sParamTemporalLayers, sizeof(m_sParamTemporalLayers));
                 break;
@@ -2314,7 +2308,7 @@ OMX_ERRORTYPE  omx_video::get_config(OMX_IN OMX_HANDLETYPE      hComp,
                     reinterpret_cast<DescribeColorAspectsParams*>(configData);
                 DEBUG_PRINT_LOW("get_config: OMX_QTIIndexConfigDescribeColorAspects");
                 if (pParam->bRequestingDataSpace) {
-                    DEBUG_PRINT_ERROR("Does not handle dataspace request");
+                    DEBUG_PRINT_HIGH("Does not handle dataspace request");
                     return OMX_ErrorUnsupportedSetting;
                 }
                 if (pParam->bDataSpaceChanged == OMX_TRUE) {
@@ -2323,14 +2317,14 @@ OMX_ERRORTYPE  omx_video::get_config(OMX_IN OMX_HANDLETYPE      hComp,
                     // If the dataspace says RGB, recommend 601-limited;
                     // since that is the destination colorspace that C2D or Venus will convert to.
                     if (pParam->nPixelFormat == HAL_PIXEL_FORMAT_RGBA_8888) {
-                        DEBUG_PRINT_INFO("get_config (dataspace changed): ColorSpace: Recommend 601-limited for RGBA8888");
+                        DEBUG_PRINT_HIGH("get_config (dataspace changed): ColorSpace: Recommend 601-limited for RGBA8888");
                         pParam->sAspects.mPrimaries = ColorAspects::PrimariesBT601_6_625;
                         pParam->sAspects.mRange = ColorAspects::RangeLimited;
                         pParam->sAspects.mTransfer = ColorAspects::TransferSMPTE170M;
                         pParam->sAspects.mMatrixCoeffs = ColorAspects::MatrixBT601_6;
                     } else {
                         // For IMPLEMENTATION_DEFINED (or anything else), stick to client's defaults.
-                        DEBUG_PRINT_INFO("get_config (dataspace changed): ColorSpace: use client-default for format=%x",
+                        DEBUG_PRINT_HIGH("get_config (dataspace changed): ColorSpace: use client-default for format=%x",
                                 pParam->nPixelFormat);
                     }
                     print_debug_color_aspects(&(pParam->sAspects), "get_config (dataspace changed) recommended");
@@ -2349,9 +2343,18 @@ OMX_ERRORTYPE  omx_video::get_config(OMX_IN OMX_HANDLETYPE      hComp,
                 memcpy(configData, &m_sConfigTemporalLayers, sizeof(m_sConfigTemporalLayers));
                 break;
             }
+        case OMX_IndexConfigAndroidVendorExtension:
+            {
+                VALIDATE_OMX_PARAM_DATA(configData, OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE);
+
+                OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *ext =
+                    reinterpret_cast<OMX_CONFIG_ANDROID_VENDOR_EXTENSIONTYPE *>(configData);
+                VALIDATE_OMX_VENDOR_EXTENSION_PARAM_DATA(ext);
+                return get_vendor_extension_config(ext);
+            }
 
         default:
-            DEBUG_PRINT_ERROR("ERROR: unsupported index %d", (int) configIndex);
+            DEBUG_PRINT_HIGH("WARNING: get_config: unsupported index %x", (int) configIndex);
             return OMX_ErrorUnsupportedIndex;
     }
     return OMX_ErrorNone;
@@ -2742,6 +2745,7 @@ OMX_ERRORTYPE  omx_video::use_output_buffer(
         return OMX_ErrorBadParameter;
     }
 
+    auto_lock l(m_buf_lock);
     if (!m_out_mem_ptr) {
         output_use_buffer = true;
         int nBufHdrSize        = 0;
@@ -3001,6 +3005,14 @@ OMX_ERRORTYPE omx_video::free_input_buffer(OMX_BUFFERHEADERTYPE *bufferHdr)
 
     if (index < m_sInPortDef.nBufferCountActual && m_pInput_pmem) {
         auto_lock l(m_lock);
+
+        if (mUseProxyColorFormat) {
+            if (m_opq_pmem_q.m_size) {
+                unsigned long addr, p1, id;
+                m_opq_pmem_q.pop_entry(&addr, &p1, &id);
+                DEBUG_PRINT_LOW("Removed entry in m_opq_pmem_q: address %lu", addr);
+            }
+        }
 
         if (m_pInput_pmem[index].fd > 0 && input_use_buffer == false) {
             DEBUG_PRINT_LOW("FreeBuffer:: i/p AllocateBuffer case");
@@ -3692,6 +3704,7 @@ OMX_ERRORTYPE  omx_video::free_buffer(OMX_IN OMX_HANDLETYPE         hComp,
                 nPortIndex, (unsigned int)m_sOutPortDef.nBufferCountActual);
         if (nPortIndex < m_sOutPortDef.nBufferCountActual &&
                 BITMASK_PRESENT(&m_out_bm_count, nPortIndex)) {
+            auto_lock l(m_buf_lock);
             // Clear the bit associated with it.
             BITMASK_CLEAR(&m_out_bm_count,nPortIndex);
             m_sOutPortDef.bPopulated = OMX_FALSE;
@@ -4678,7 +4691,7 @@ OMX_ERRORTYPE omx_video::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVE
                 profileLevelType->eProfile = OMX_VIDEO_H263ProfileBaseline;
                 profileLevelType->eLevel   = OMX_VIDEO_H263Level70;
             } else {
-                DEBUG_PRINT_ERROR("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %d", (int)profileLevelType->nProfileIndex);
+                DEBUG_PRINT_LOW("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %d", (int)profileLevelType->nProfileIndex);
                 eRet = OMX_ErrorNoMore;
             }
         } else if (m_sOutPortDef.format.video.eCompressionFormat == OMX_VIDEO_CodingMPEG4) {
@@ -4689,7 +4702,7 @@ OMX_ERRORTYPE omx_video::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVE
                 profileLevelType->eProfile = OMX_VIDEO_MPEG4ProfileAdvancedSimple;
                 profileLevelType->eLevel   = OMX_VIDEO_MPEG4Level5;
             } else {
-                DEBUG_PRINT_ERROR("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %d", (int)profileLevelType->nProfileIndex);
+                DEBUG_PRINT_LOW("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %d", (int)profileLevelType->nProfileIndex);
                 eRet = OMX_ErrorNoMore;
             }
         }
@@ -4760,7 +4773,7 @@ OMX_ERRORTYPE omx_video::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVE
                 profileLevelType->eProfile = OMX_VIDEO_H263ProfileBaseline;
                 profileLevelType->eLevel   = OMX_VIDEO_H263Level70;
             } else {
-                DEBUG_PRINT_ERROR("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %u", (unsigned int)profileLevelType->nProfileIndex);
+                DEBUG_PRINT_LOW("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %u", (unsigned int)profileLevelType->nProfileIndex);
                 eRet = OMX_ErrorNoMore;
             }
         } else if (m_sOutPortDef.format.video.eCompressionFormat == OMX_VIDEO_CodingMPEG4) {
@@ -4771,7 +4784,7 @@ OMX_ERRORTYPE omx_video::get_supported_profile_level(OMX_VIDEO_PARAM_PROFILELEVE
                 profileLevelType->eProfile = OMX_VIDEO_MPEG4ProfileAdvancedSimple;
                 profileLevelType->eLevel   = OMX_VIDEO_MPEG4Level5;
             } else {
-                DEBUG_PRINT_ERROR("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %u", (unsigned int)profileLevelType->nProfileIndex);
+                DEBUG_PRINT_LOW("get_parameter: OMX_IndexParamVideoProfileLevelQuerySupported nProfileIndex ret NoMore %u", (unsigned int)profileLevelType->nProfileIndex);
                 eRet = OMX_ErrorNoMore;
             }
         } else if (m_sOutPortDef.format.video.eCompressionFormat == OMX_VIDEO_CodingVP8) {
@@ -5278,10 +5291,21 @@ OMX_ERRORTYPE omx_video::convert_queue_buffer(OMX_HANDLETYPE hComp,
                     pdest_frame, (unsigned int)pdest_frame->nFilledLen);
         }
     } else {
+        unsigned int input_buf_size = 0;
+        if (!c2d_conv.get_buffer_size(C2D_INPUT, input_buf_size)) {
+            DEBUG_PRINT_ERROR("convert_queue_buffer: failed to get C2D i/p buf-size!");
+            return OMX_ErrorBadParameter;
+        } else if (Input_pmem_info.size < input_buf_size) {
+            DEBUG_PRINT_ERROR("convert_queue_buffer: insufficient handle size(%u) v/s min(%u)",
+                    Input_pmem_info.size, input_buf_size);
+            return OMX_ErrorBadParameter;
+        }
         uva = (unsigned char *)mmap(NULL, Input_pmem_info.size,
                 PROT_READ|PROT_WRITE,
                 MAP_SHARED,Input_pmem_info.fd,0);
         if (uva == MAP_FAILED) {
+            DEBUG_PRINT_ERROR("convert_queue_buffer: failed to map handle fd(%d) size(%u)",
+                    Input_pmem_info.fd, Input_pmem_info.size);
             ret = OMX_ErrorBadParameter;
         } else {
             if (!c2d_conv.convert(Input_pmem_info.fd, uva, uva,
@@ -5471,3 +5495,8 @@ OMX_ERRORTYPE omx_video::push_empty_eos_buffer(OMX_HANDLETYPE hComp) {
     VIDC_TRACE_INT_LOW("ETB-pending", pending_input_buffers);
     return retVal;
 }
+
+// no code beyond this !
+
+// inline import of vendor extensions implementation
+#include "omx_video_extensions.hpp"
