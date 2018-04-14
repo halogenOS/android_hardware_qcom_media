@@ -1,5 +1,5 @@
 /*--------------------------------------------------------------------------
-Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are
@@ -76,7 +76,11 @@ omx_core_cb_type core[] =
     NULL,   // Shared object library handle
     "libOmxVdec.so",
     {
+#ifdef _ANDROID_O_MR1_DIVX_CHANGES
+      "video_decoder.divx4"
+#else
       "video_decoder.divx"
+#endif
     }
   },
   {
@@ -102,7 +106,11 @@ omx_core_cb_type core[] =
     NULL,   // Shared object library handle
     "libOmxVdec.so",
     {
+#ifdef _ANDROID_O_MR1_DIVX_CHANGES
+      "video_decoder.divx311"
+#else
       "video_decoder.divx"
+#endif
     }
   },
   {
@@ -262,6 +270,20 @@ omx_core_cb_type core[] =
     }
   },
   {
+     "OMX.qcom.video.decoder.vp9.secure",
+     NULL,   // Create instance function
+     // Unique instance handle
+     {
+       NULL
+     },
+     NULL,   // Shared object library handle
+     "libOmxVdec.so",
+     {
+       "video_decoder.vp9"
+     }
+  },
+
+  {
     "OMX.qcom.audio.decoder.amrnb",
     NULL,   // Create instance function
     // Unique instance handle
@@ -325,6 +347,19 @@ omx_core_cb_type core[] =
     {
       "video_encoder.avc"
     }
+  },
+  {
+    "OMX.qcom.video.encoder.avc.secure",
+     NULL, // Create instance function
+     // Unique instance handle
+     {
+       NULL
+     },
+     NULL,   // Shared object library handle
+     "libOmxVenc.so",
+     {
+       "video_encoder.avc"
+     }
   },
   {
     "OMX.qcom.video.encoder.vp8",
@@ -657,19 +692,6 @@ omx_core_cb_type core[] =
     }
   },
   {
-    "OMX.qcom.video.decoder.vp9.secure",
-    NULL,   // Create instance function
-    // Unique instance handle
-    {
-      NULL
-    },
-    NULL,   // Shared object library handle
-    "libOmxVdec.so",
-    {
-      "video_decoder.vp9"
-    }
-  },
-  {
     "OMX.qcom.file.muxer",
     NULL, // Create instance function
     // Unique instance handle
@@ -694,19 +716,6 @@ omx_core_cb_type core[] =
     {
       "container_muxer.mp4"
     }
-  },
-  {
-    "OMX.qcom.video.encoder.avc.secure",
-     NULL, // Create instance function
-     // Unique instance handle
-     {
-       NULL
-     },
-     NULL,   // Shared object library handle
-     "libOmxVenc.so",
-     {
-       "video_encoder.avc"
-     }
   },
   {
     "OMX.qcom.audio.decoder.aac",
